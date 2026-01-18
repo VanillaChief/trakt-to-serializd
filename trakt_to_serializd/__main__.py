@@ -14,9 +14,14 @@ def cli() -> None:
 @cli.command()
 @click.option('--no-credentials-store', is_flag=True, help='Disables storage of user credentials')
 @click.option('--debug', is_flag=True, help='Enables debug logging')
-def migrate(no_credentials_store: bool, debug: bool) -> None:
+@click.option(
+    '--with-dates',
+    is_flag=True,
+    help='Import watch dates to Serializd diary (logs each episode individually with original watch date)'
+)
+def migrate(no_credentials_store: bool, debug: bool, with_dates: bool) -> None:
     """Runs Trakt to Serializd migrator"""
-    migrator = Migrator(not no_credentials_store)
+    migrator = Migrator(not no_credentials_store, with_dates=with_dates)
     if debug:
         migrator.logger.setLevel(logging.DEBUG)
 
