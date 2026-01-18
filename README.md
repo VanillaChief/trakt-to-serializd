@@ -57,3 +57,12 @@ To install pre-commit hooks, run:
 pre-commit install
 ```
 
+# AI Attribution
+
+The `--with-dates` feature (diary migration with watch dates) was developed with AI assistance.
+
+- **AI Tool**: Claude Opus 4.5 (Anthropic)
+- **Human Oversight**: All code was reviewed and tested by a human developer
+- **Commits**: AI-assisted commits include the `Co-authored-by: Claude <noreply@anthropic.com>` trailer
+
+This disclosure is provided in accordance with best practices for AI transparency in open source development.
