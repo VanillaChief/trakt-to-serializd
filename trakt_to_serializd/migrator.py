@@ -242,12 +242,21 @@ class Migrator:
                         from datetime import datetime, timezone
                         watched_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                    self.serializd.log_episode_to_diary(
-                        show_id=show_id,
-                        season_id=season_info.seasonId,
-                        episode_number=episode_number,
-                        watched_at=watched_at
-                    )
+                    try:
+                        self.serializd.log_episode_to_diary(
+                            show_id=show_id,
+                            season_id=season_info.seasonId,
+                            episode_number=episode_number,
+                            watched_at=watched_at
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            'Failed to log S%02dE%02d of "%s": %s',
+                            season_number, episode_number, show_title, str(e)
+                        )
+                        # Still mark as migrated to avoid retrying failed episodes
+                        self.migration_cache.mark_migrated(show_id, season_info.seasonId, episode_number)
+                        continue
 
                     # Mark as migrated and save periodically
                     self.migration_cache.mark_migrated(show_id, season_info.seasonId, episode_number)
