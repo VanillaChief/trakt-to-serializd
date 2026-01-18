@@ -1,6 +1,8 @@
+import json
 import logging
 import sys
 import time
+from pathlib import Path
 
 from rich.logging import RichHandler
 from rich.progress import track
@@ -11,6 +13,70 @@ from serializd.exceptions import EmptySeasonError, LoginError
 from trakt_to_serializd.credentials import CredentialHelper
 from trakt_to_serializd.exceptions import TraktError
 from trakt_to_serializd.trakt import TraktAPI
+from trakt_to_serializd.utils import get_data_directory
+
+
+class MigrationCache:
+    """Tracks which episodes have been migrated to prevent duplicates."""
+
+    def __init__(self):
+        self.path = get_data_directory() / 'migration_cache.json'
+        self.data: set[str] = set()
+        self._load()
+
+    def _load(self):
+        """Load cache from file."""
+        if self.path.exists():
+            try:
+                with self.path.open('r', encoding='utf-8') as f:
+                    self.data = set(json.load(f))
+            except (json.JSONDecodeError, TypeError):
+                self.data = set()
+
+    def save(self):
+        """Save cache to file."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open('w', encoding='utf-8') as f:
+            json.dump(list(self.data), f)
+
+    def _key(self, show_id: int, season_id: int, episode_number: int) -> str:
+        """Generate unique key for an episode."""
+        return f"{show_id}:{season_id}:{episode_number}"
+
+    def is_migrated(self, show_id: int, season_id: int, episode_number: int) -> bool:
+        """Check if an episode has already been migrated."""
+        return self._key(show_id, season_id, episode_number) in self.data
+
+    def mark_migrated(self, show_id: int, season_id: int, episode_number: int):
+        """Mark an episode as migrated."""
+        self.data.add(self._key(show_id, season_id, episode_number))
+
+    def count(self) -> int:
+        """Return number of migrated episodes."""
+        return len(self.data)
+
+    def populate_from_diary(self, diary_entries: list[dict]) -> int:
+        """
+        Populate cache from Serializd diary entries.
+        
+        Args:
+            diary_entries: List of diary entry dicts from Serializd API
+            
+        Returns:
+            Number of entries added to cache
+        """
+        added = 0
+        for entry in diary_entries:
+            show_id = entry.get('showId')
+            season_id = entry.get('seasonId')
+            episode_number = entry.get('episodeNumber')
+            
+            if show_id and season_id and episode_number:
+                key = self._key(show_id, season_id, episode_number)
+                if key not in self.data:
+                    self.data.add(key)
+                    added += 1
+        return added
 
 
 class Migrator:
@@ -35,6 +101,7 @@ class Migrator:
 
         self.trakt = TraktAPI()
         self.serializd = SerializdClient()
+        self.migration_cache = MigrationCache()
 
     def main(self):
         try:
@@ -114,12 +181,21 @@ class Migrator:
             for season in show['seasons']
             for ep in [season['episodes']]
         )
+
+        cached_count = self.migration_cache.count()
+        if cached_count > 0:
+            self.logger.info(
+                'Found %d previously migrated episodes in cache',
+                cached_count
+            )
+
         self.logger.info(
             'Migrating %d episodes from %d shows with watch dates',
             total_episodes, len(watched_data)
         )
 
         episode_count = 0
+        skipped_count = 0
         for watched_show in watched_data:
             show_title = watched_show['show']['title']
             show_id = watched_show['show']['ids']['tmdb']
@@ -149,6 +225,12 @@ class Migrator:
                     total=len(watched_season['episodes'])
                 ):
                     episode_number = episode['number']
+
+                    # Skip if already migrated
+                    if self.migration_cache.is_migrated(show_id, season_info.seasonId, episode_number):
+                        skipped_count += 1
+                        continue
+
                     # Trakt provides last_watched_at in ISO 8601 format
                     watched_at = episode.get('last_watched_at')
 
@@ -166,9 +248,22 @@ class Migrator:
                         episode_number=episode_number,
                         watched_at=watched_at
                     )
+
+                    # Mark as migrated and save periodically
+                    self.migration_cache.mark_migrated(show_id, season_info.seasonId, episode_number)
                     episode_count += 1
 
-        self.logger.info('Successfully migrated %d episodes with watch dates', episode_count)
+                    # Save cache every 100 episodes to prevent data loss
+                    if episode_count % 100 == 0:
+                        self.migration_cache.save()
+
+        # Final save
+        self.migration_cache.save()
+
+        self.logger.info(
+            'Successfully migrated %d episodes with watch dates (%d skipped as already migrated)',
+            episode_count, skipped_count
+        )
 
     def trakt_login(self):
         if self.use_credentials_store:
