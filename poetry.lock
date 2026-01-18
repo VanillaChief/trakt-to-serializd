@@ -695,7 +695,7 @@ pydantic = "^2.5.3"
 type = "git"
 url = "https://github.com/VanillaChief/serializd-py"
 reference = "feature/diary-with-date"
-resolved_reference = "3905ae5fbc9f132c562c5c9a296cdb23ee7f64c8"
+resolved_reference = "9236a25c4bc258e92ccc2b4d4835de276eb1578f"
 
 [[package]]
 name = "sniffio"

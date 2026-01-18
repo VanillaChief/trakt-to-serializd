@@ -203,7 +203,7 @@ class Migrator:
             for watched_season in watched_show['seasons']:
                 season_number = watched_season['number']
                 self.logger.info(
-                    'Processing season %d of "%s"',
+                    'Processing season %s of "%s"',
                     season_number, show_title
                 )
 
@@ -214,8 +214,14 @@ class Migrator:
                     )
                 except EmptySeasonError:
                     self.logger.warning(
-                        'Serializd returned no episodes for season %d of "%s", skipping',
+                        'Serializd returned no episodes for season %s of "%s", skipping',
                         season_number, show_title
+                    )
+                    continue
+                except Exception as e:
+                    self.logger.warning(
+                        'Failed to fetch season %s of "%s": %s, skipping',
+                        season_number, show_title, str(e)
                     )
                     continue
 
