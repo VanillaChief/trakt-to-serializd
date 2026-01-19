@@ -5,7 +5,7 @@ Migrate Trakt watch history to Serializd with original watch dates preserved.
 ## Install
 
 ```bash
-pipx install git+https://github.com/VanillaChief/trakt-to-serializd@feature/diary-with-dates
+pip install git+https://github.com/VanillaChief/trakt-to-serializd@feature/diary-with-dates
 ```
 
 ## Usage
