@@ -48,14 +48,25 @@ Run `trakt_to_serializd clean` to remove them.
 ## Installation
 
 ```bash
-pip install git+https://github.com/Velocidensity/trakt-to-serializd
+# Recommended: use pipx for isolated install
+pipx install git+https://github.com/VanillaChief/trakt-to-serializd@feature/diary-with-dates
+
+# Or with pip
+pip install git+https://github.com/VanillaChief/trakt-to-serializd@feature/diary-with-dates
 ```
+
+Then just run `trakt_to_serializd migrate`.
 
 ## Development
 
 ```bash
+git clone https://github.com/VanillaChief/trakt-to-serializd
+cd trakt-to-serializd
 poetry install --with=dev
 pre-commit install
+
+# Run during development:
+poetry run trakt_to_serializd migrate
 ```
 
 ## AI Attribution
