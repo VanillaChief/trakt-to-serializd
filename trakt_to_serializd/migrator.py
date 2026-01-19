@@ -71,11 +71,25 @@ class MigrationCache:
             watched_date: If provided, checks for this specific watch date.
                          If None, checks if episode was ever migrated (legacy).
         """
-        # Check with date if provided
+        # First check legacy key - if episode was migrated without date tracking,
+        # we should skip ALL watch events for it (already has a diary entry)
+        legacy_key = self._key(show_id, season_id, episode_number)
+        
         if watched_date:
-            return self._key(show_id, season_id, episode_number, watched_date) in self.data
+            # Check date-specific key first
+            date_key = self._key(show_id, season_id, episode_number, watched_date)
+            if date_key in self.data:
+                return True
+            # For rewatch support: if legacy key exists but no date key,
+            # this is a NEW watch date that should be migrated as a rewatch
+            # So we return False to allow the diary entry
+            # BUT if we want to prevent duplicates from old cache, we need to check
+            # if legacy key exists AND there's already a diary entry in Serializd
+            # For safety, if legacy exists without date, skip it
+            return legacy_key in self.data
+        
         # Legacy check - episode migrated at any date
-        return self._key(show_id, season_id, episode_number) in self.data
+        return legacy_key in self.data
 
     def mark_migrated(self, show_id: int, season_id: int, episode_number: int, watched_date: str | None = None):
         """Mark an episode watch event as migrated.
