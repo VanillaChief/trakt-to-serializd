@@ -68,27 +68,18 @@ class MigrationCache:
             show_id: TMDB show ID
             season_id: Serializd season ID
             episode_number: Episode number
-            watched_date: If provided, checks for this specific watch date.
+            watched_date: If provided, checks for this specific watch date only.
                          If None, checks if episode was ever migrated (legacy).
         """
-        # First check legacy key - if episode was migrated without date tracking,
-        # we should skip ALL watch events for it (already has a diary entry)
-        legacy_key = self._key(show_id, season_id, episode_number)
-        
         if watched_date:
-            # Check date-specific key first
+            # When a date is provided, ONLY check the date-specific key.
+            # This allows rewatches to be migrated even if the episode
+            # was previously migrated with the legacy (dateless) key.
             date_key = self._key(show_id, season_id, episode_number, watched_date)
-            if date_key in self.data:
-                return True
-            # For rewatch support: if legacy key exists but no date key,
-            # this is a NEW watch date that should be migrated as a rewatch
-            # So we return False to allow the diary entry
-            # BUT if we want to prevent duplicates from old cache, we need to check
-            # if legacy key exists AND there's already a diary entry in Serializd
-            # For safety, if legacy exists without date, skip it
-            return legacy_key in self.data
+            return date_key in self.data
         
-        # Legacy check - episode migrated at any date
+        # Legacy check - episode migrated at any date (for backward compatibility)
+        legacy_key = self._key(show_id, season_id, episode_number)
         return legacy_key in self.data
 
     def mark_migrated(self, show_id: int, season_id: int, episode_number: int, watched_date: str | None = None):
@@ -195,6 +186,15 @@ class Migrator:
             description=f'Updating {len(watched_data)} shows...',
             total=len(watched_data)
         ):
+            # Skip shows without TMDB ID
+            tmdb_id = watched_show['show']['ids'].get('tmdb')
+            if not tmdb_id:
+                self.logger.warning(
+                    'Skipping show "%s" - no TMDB ID',
+                    watched_show['show']['title']
+                )
+                continue
+            
             complete_seasons = []
             for watched_season in watched_show['seasons']:
                 self.logger.info(
@@ -209,7 +209,7 @@ class Migrator:
                 mark_full_season = False
                 try:
                     season_info = self.serializd.get_season(
-                        show_id=watched_show['show']['ids']['tmdb'],
+                        show_id=tmdb_id,
                         season_number=watched_season['number']
                     )
                     mark_full_season = len(season_info.episodes) == len(watched_season['episodes'])
@@ -218,22 +218,45 @@ class Migrator:
                         'Serializd returned no episodes, marking entire season as watched'
                     )
                     mark_full_season = True
+                except Exception as e:
+                    self.logger.warning(
+                        'Failed to get season info for %s S%02d: %s',
+                        watched_show['show']['title'],
+                        watched_season['number'],
+                        str(e)
+                    )
+                    continue
 
                 if mark_full_season:
                     complete_seasons.append(season_info.seasonId)
                     continue
 
-                self.serializd.log_episodes(
-                    show_id=watched_show['show']['ids']['tmdb'],
-                    season_id=season_info.seasonId,
-                    episode_numbers=[ep['number'] for ep in watched_season['episodes']]
-                )
+                try:
+                    self.serializd.log_episodes(
+                        show_id=tmdb_id,
+                        season_id=season_info.seasonId,
+                        episode_numbers=[ep['number'] for ep in watched_season['episodes']]
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        'Failed to log episodes for %s S%02d: %s',
+                        watched_show['show']['title'],
+                        watched_season['number'],
+                        str(e)
+                    )
 
             if complete_seasons:
-                self.serializd.log_seasons(
-                    show_id=watched_show['show']['ids']['tmdb'],
-                    season_ids=complete_seasons
-                )
+                try:
+                    self.serializd.log_seasons(
+                        show_id=tmdb_id,
+                        season_ids=complete_seasons
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        'Failed to log seasons for %s: %s',
+                        watched_show['show']['title'],
+                        str(e)
+                    )
 
     def _migrate_with_dates(self, watched_data: list) -> None:
         """Migration with diary dates - logs each episode individually with watch date.
