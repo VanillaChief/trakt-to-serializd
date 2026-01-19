@@ -228,6 +228,7 @@ class TraktAPI:
         self.logger.info(f'Total: {len(all_history)} watch events')
         
         # Organize by show -> season -> episode -> list of watch dates
+        # Use a set to deduplicate identical timestamps (sync issues)
         organized = {}
         for entry in all_history:
             show = entry.get('show', {})
@@ -251,8 +252,18 @@ class TraktAPI:
                 organized[show_id]['seasons'][season_num] = {}
             
             if episode_num not in organized[show_id]['seasons'][season_num]:
-                organized[show_id]['seasons'][season_num][episode_num] = []
+                organized[show_id]['seasons'][season_num][episode_num] = set()
             
-            organized[show_id]['seasons'][season_num][episode_num].append(watched_at)
+            # Extract date part only (YYYY-MM-DD) to dedupe same-day rewatches
+            date_part = watched_at[:10] if len(watched_at) >= 10 else watched_at
+            organized[show_id]['seasons'][season_num][episode_num].add(date_part)
+        
+        # Convert sets to sorted lists
+        for show_id in organized:
+            for season_num in organized[show_id]['seasons']:
+                for episode_num in organized[show_id]['seasons'][season_num]:
+                    organized[show_id]['seasons'][season_num][episode_num] = sorted(
+                        organized[show_id]['seasons'][season_num][episode_num]
+                    )
         
         return organized

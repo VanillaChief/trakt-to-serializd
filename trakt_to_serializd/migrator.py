@@ -298,13 +298,19 @@ class Migrator:
                     # Check if this episode is already watched in Serializd
                     already_watched = (season_number, episode_number) in watched_episodes
                     
-                    # Process each watch event for this episode
-                    for i, watched_at in enumerate(sorted(watch_dates)):
+                    # Process each watch event for this episode (watch_dates are already date-only strings)
+                    for i, watched_date in enumerate(watch_dates):
+                        # For API call, we need full datetime format
+                        watched_at = f"{watched_date}T12:00:00Z"
+                        
+                        # Determine if this is a rewatch:
+                        # - If it's not the first watch event from Trakt history, it's a rewatch
+                        # - If the episode was already watched in Serializd before this migration, it's a rewatch
                         is_rewatch = (i > 0) or already_watched
                         
                         # Skip if this specific watch event is already migrated
                         if self.migration_cache.is_migrated(
-                            show_id, season_info.seasonId, episode_number, watched_at
+                            show_id, season_info.seasonId, episode_number, watched_date
                         ):
                             skipped_count += 1
                             continue
@@ -316,29 +322,29 @@ class Migrator:
                                 episode_number=episode_number,
                                 watched_at=watched_at,
                                 is_rewatch=is_rewatch,
-                                # Skip marking as watched if already watched
+                                # Skip marking as watched if already watched in Serializd
                                 mark_as_watched=not already_watched
                             )
                         except Exception as e:
                             self.logger.warning(
                                 'Failed to log S%02dE%02d of "%s" (%s): %s',
-                                season_number, episode_number, show_title, watched_at, str(e)
+                                season_number, episode_number, show_title, watched_date, str(e)
                             )
                             # Still mark as migrated to avoid retrying failed entries
                             self.migration_cache.mark_migrated(
-                                show_id, season_info.seasonId, episode_number, watched_at
+                                show_id, season_info.seasonId, episode_number, watched_date
                             )
                             continue
 
                         # Mark as migrated and save periodically
                         self.migration_cache.mark_migrated(
-                            show_id, season_info.seasonId, episode_number, watched_at
+                            show_id, season_info.seasonId, episode_number, watched_date
                         )
                         episode_count += 1
                         if is_rewatch:
                             rewatch_count += 1
                         
-                        # After first log, episode is now watched
+                        # After first successful log, episode is now watched in Serializd
                         already_watched = True
 
                         # Save cache every 100 episodes to prevent data loss
