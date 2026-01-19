@@ -3,6 +3,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from datetime import datetime
 
 from rich.logging import RichHandler
 from rich.progress import track
@@ -17,7 +18,11 @@ from trakt_to_serializd.utils import get_data_directory
 
 
 class MigrationCache:
-    """Tracks which episodes have been migrated to prevent duplicates."""
+    """Tracks which episode watches have been migrated to prevent duplicates.
+    
+    Stores watch events by date to support rewatches - each unique watch date
+    for an episode is tracked separately.
+    """
 
     def __init__(self):
         self.path = get_data_directory() / 'migration_cache.json'
@@ -39,17 +44,52 @@ class MigrationCache:
         with self.path.open('w', encoding='utf-8') as f:
             json.dump(list(self.data), f)
 
-    def _key(self, show_id: int, season_id: int, episode_number: int) -> str:
-        """Generate unique key for an episode."""
+    def _key(self, show_id: int, season_id: int, episode_number: int, watched_date: str | None = None) -> str:
+        """Generate unique key for an episode watch event.
+        
+        Args:
+            show_id: TMDB show ID
+            season_id: Serializd season ID
+            episode_number: Episode number
+            watched_date: Date string (YYYY-MM-DD) for the watch event.
+                         If None, uses legacy format for backward compatibility.
+        """
+        if watched_date:
+            # Extract just the date part (YYYY-MM-DD) for comparison
+            date_part = watched_date[:10] if len(watched_date) >= 10 else watched_date
+            return f"{show_id}:{season_id}:{episode_number}:{date_part}"
+        # Legacy format for backward compatibility with old cache
         return f"{show_id}:{season_id}:{episode_number}"
 
-    def is_migrated(self, show_id: int, season_id: int, episode_number: int) -> bool:
-        """Check if an episode has already been migrated."""
+    def is_migrated(self, show_id: int, season_id: int, episode_number: int, watched_date: str | None = None) -> bool:
+        """Check if an episode watch event has already been migrated.
+        
+        Args:
+            show_id: TMDB show ID
+            season_id: Serializd season ID
+            episode_number: Episode number
+            watched_date: If provided, checks for this specific watch date.
+                         If None, checks if episode was ever migrated (legacy).
+        """
+        # Check with date if provided
+        if watched_date:
+            return self._key(show_id, season_id, episode_number, watched_date) in self.data
+        # Legacy check - episode migrated at any date
         return self._key(show_id, season_id, episode_number) in self.data
 
-    def mark_migrated(self, show_id: int, season_id: int, episode_number: int):
-        """Mark an episode as migrated."""
-        self.data.add(self._key(show_id, season_id, episode_number))
+    def mark_migrated(self, show_id: int, season_id: int, episode_number: int, watched_date: str | None = None):
+        """Mark an episode watch event as migrated.
+        
+        Args:
+            show_id: TMDB show ID
+            season_id: Serializd season ID
+            episode_number: Episode number  
+            watched_date: Date of the watch event. If None, uses legacy format.
+        """
+        self.data.add(self._key(show_id, season_id, episode_number, watched_date))
+        # Also add legacy key for backward compatibility
+        if watched_date:
+            self.data.add(self._key(show_id, season_id, episode_number))
 
     def count(self) -> int:
         """Return number of migrated episodes."""
@@ -70,12 +110,20 @@ class MigrationCache:
             show_id = entry.get('showId')
             season_id = entry.get('seasonId')
             episode_number = entry.get('episodeNumber')
+            # Get the diary date (backdated or created date)
+            backdate = entry.get('backdate') or entry.get('createdAt')
             
             if show_id and season_id and episode_number:
-                key = self._key(show_id, season_id, episode_number)
-                if key not in self.data:
-                    self.data.add(key)
-                    added += 1
+                # Add with date for rewatch tracking
+                if backdate:
+                    key = self._key(show_id, season_id, episode_number, backdate)
+                    if key not in self.data:
+                        self.data.add(key)
+                        added += 1
+                # Also add legacy key
+                legacy_key = self._key(show_id, season_id, episode_number)
+                if legacy_key not in self.data:
+                    self.data.add(legacy_key)
         return added
 
 
@@ -174,34 +222,51 @@ class Migrator:
                 )
 
     def _migrate_with_dates(self, watched_data: list) -> None:
-        """Migration with diary dates - logs each episode individually with watch date."""
-        total_episodes = sum(
-            len(ep)
-            for show in watched_data
-            for season in show['seasons']
-            for ep in [season['episodes']]
+        """Migration with diary dates - logs each episode individually with watch date.
+        
+        Supports rewatches by fetching full history from Trakt and creating
+        diary entries for each watch event.
+        """
+        # First, get the current user info for watched status checks
+        serializd_username = self._get_serializd_username()
+        
+        # Fetch full history from Trakt (includes rewatches)
+        self.logger.info('Fetching complete watch history from Trakt...')
+        history_data = self.trakt.get_full_episode_history(
+            self.trakt.get_user_info()['user']['username']
+        )
+        
+        total_shows = len(history_data)
+        total_watch_events = sum(
+            len(dates)
+            for show_data in history_data.values()
+            for season in show_data['seasons'].values()
+            for dates in season.values()
         )
 
         cached_count = self.migration_cache.count()
         if cached_count > 0:
             self.logger.info(
-                'Found %d previously migrated episodes in cache',
+                'Found %d previously migrated watch events in cache',
                 cached_count
             )
 
         self.logger.info(
-            'Migrating %d episodes from %d shows with watch dates',
-            total_episodes, len(watched_data)
+            'Processing %d watch events from %d shows',
+            total_watch_events, total_shows
         )
 
         episode_count = 0
         skipped_count = 0
-        for watched_show in watched_data:
-            show_title = watched_show['show']['title']
-            show_id = watched_show['show']['ids']['tmdb']
+        rewatch_count = 0
+        
+        for show_id, show_data in history_data.items():
+            show_title = show_data['show'].get('title', 'Unknown')
+            
+            # Check which episodes are already watched in Serializd
+            watched_episodes = self._get_watched_episodes(serializd_username, show_id)
 
-            for watched_season in watched_show['seasons']:
-                season_number = watched_season['number']
+            for season_number, episodes in show_data['seasons'].items():
                 self.logger.info(
                     'Processing season %s of "%s"',
                     season_number, show_title
@@ -225,60 +290,91 @@ class Migrator:
                     )
                     continue
 
-                for episode in track(
-                    watched_season['episodes'],
+                for episode_number, watch_dates in track(
+                    episodes.items(),
                     description=f'  S{season_number:02d}...',
-                    total=len(watched_season['episodes'])
+                    total=len(episodes)
                 ):
-                    episode_number = episode['number']
+                    # Check if this episode is already watched in Serializd
+                    already_watched = (season_number, episode_number) in watched_episodes
+                    
+                    # Process each watch event for this episode
+                    for i, watched_at in enumerate(sorted(watch_dates)):
+                        is_rewatch = (i > 0) or already_watched
+                        
+                        # Skip if this specific watch event is already migrated
+                        if self.migration_cache.is_migrated(
+                            show_id, season_info.seasonId, episode_number, watched_at
+                        ):
+                            skipped_count += 1
+                            continue
 
-                    # Skip if already migrated
-                    if self.migration_cache.is_migrated(show_id, season_info.seasonId, episode_number):
-                        skipped_count += 1
-                        continue
+                        try:
+                            self.serializd.log_episode_to_diary(
+                                show_id=show_id,
+                                season_id=season_info.seasonId,
+                                episode_number=episode_number,
+                                watched_at=watched_at,
+                                is_rewatch=is_rewatch,
+                                # Skip marking as watched if already watched
+                                mark_as_watched=not already_watched
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                'Failed to log S%02dE%02d of "%s" (%s): %s',
+                                season_number, episode_number, show_title, watched_at, str(e)
+                            )
+                            # Still mark as migrated to avoid retrying failed entries
+                            self.migration_cache.mark_migrated(
+                                show_id, season_info.seasonId, episode_number, watched_at
+                            )
+                            continue
 
-                    # Trakt provides last_watched_at in ISO 8601 format
-                    watched_at = episode.get('last_watched_at')
-
-                    if not watched_at:
-                        self.logger.warning(
-                            'No watch date for S%02dE%02d of "%s", using current time',
-                            season_number, episode_number, show_title
+                        # Mark as migrated and save periodically
+                        self.migration_cache.mark_migrated(
+                            show_id, season_info.seasonId, episode_number, watched_at
                         )
-                        from datetime import datetime, timezone
-                        watched_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        episode_count += 1
+                        if is_rewatch:
+                            rewatch_count += 1
+                        
+                        # After first log, episode is now watched
+                        already_watched = True
 
-                    try:
-                        self.serializd.log_episode_to_diary(
-                            show_id=show_id,
-                            season_id=season_info.seasonId,
-                            episode_number=episode_number,
-                            watched_at=watched_at
-                        )
-                    except Exception as e:
-                        self.logger.warning(
-                            'Failed to log S%02dE%02d of "%s": %s',
-                            season_number, episode_number, show_title, str(e)
-                        )
-                        # Still mark as migrated to avoid retrying failed episodes
-                        self.migration_cache.mark_migrated(show_id, season_info.seasonId, episode_number)
-                        continue
-
-                    # Mark as migrated and save periodically
-                    self.migration_cache.mark_migrated(show_id, season_info.seasonId, episode_number)
-                    episode_count += 1
-
-                    # Save cache every 100 episodes to prevent data loss
-                    if episode_count % 100 == 0:
-                        self.migration_cache.save()
+                        # Save cache every 100 episodes to prevent data loss
+                        if episode_count % 100 == 0:
+                            self.migration_cache.save()
 
         # Final save
         self.migration_cache.save()
 
         self.logger.info(
-            'Successfully migrated %d episodes with watch dates (%d skipped as already migrated)',
-            episode_count, skipped_count
+            'Successfully migrated %d watch events (%d rewatches), %d skipped as already in cache',
+            episode_count, rewatch_count, skipped_count
         )
+
+    def _get_serializd_username(self) -> str:
+        """Get the Serializd username of the logged-in user."""
+        try:
+            # The token check endpoint returns user info
+            token_info = self.serializd.check_token(self.serializd.access_token)
+            return token_info.user.username if token_info.user else ""
+        except Exception:
+            return ""
+
+    def _get_watched_episodes(self, username: str, show_id: int) -> set[tuple[int, int]]:
+        """Get set of (season_number, episode_number) tuples that are watched for a show."""
+        watched = set()
+        try:
+            progress = self.serializd.get_user_show_progress(username, show_id)
+            if progress:
+                for season in progress.get('watchedSeasons', []):
+                    season_num = season.get('seasonNumber')
+                    for ep_num in season.get('watchedEpisodes', []):
+                        watched.add((season_num, ep_num))
+        except Exception:
+            pass
+        return watched
 
     def trakt_login(self):
         if self.use_credentials_store:
