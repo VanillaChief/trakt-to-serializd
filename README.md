@@ -1,68 +1,64 @@
 # Trakt-to-Serializd
+
 Migrate your watched shows from Trakt to Serializd!
 
-# Features
+## Features
+
+- One-command migration - just run `migrate` and follow the prompts
+- Preserves original watch dates in Serializd diary
+- Handles rewatches (creates multiple diary entries)
+- Prevents duplicates with smart caching
 - Support for private Trakt accounts
-- Migrate shows, seasons, and even individual episodes
-- **NEW**: Migrate watch dates to your Serializd diary using `--with-dates`
 
-# Usage
-
-## Basic Migration (without dates)
-1. Run `trakt_to_serializd migrate` and follow the interactive instructions to log in to Trakt and Serializd.
-2. Wait for the process to complete.
-
-## Migration with Watch Dates
-To preserve your original watch dates from Trakt in your Serializd diary:
+## Usage
 
 ```bash
-trakt_to_serializd migrate --with-dates
+trakt_to_serializd migrate
 ```
 
-This will log each episode individually to your Serializd diary with the original watch date from Trakt.
+That's it! The tool will:
 
-**Note**: Diary migration logs each episode separately, which is slower but preserves your watch history dates.
+1. Log you into Trakt and Serializd
+2. Fetch your existing Serializd diary to prevent duplicates
+3. Migrate all episodes with their original watch dates
+4. Handle rewatches automatically
 
----
+### Other Commands
 
-Note: The migration is meant to be one time process. Rerunning it will fail as it will attempt to re-add the same shows.
-This case is not currently handled by the migrator.
+```bash
+# Refresh cache from Serializd (if you added entries manually)
+trakt_to_serializd refresh-cache
 
-# Stored credentials
+# Find and remove duplicate diary entries
+trakt_to_serializd cleanup-duplicates
 
-#### Pathes
+# Remove saved credentials
+trakt_to_serializd clean
+```
+
+## Stored Credentials
+
+**Paths:**
 - Windows: `%localappdata%\trakt_to_serializd\credentials.json`
 - Linux: `~/.local/share/trakt_to_serializd/credentials.json`
 
-Unless you use `--no-credentials-save`, your credentials will be saved locally on your hard drive,
-location dependent on your operating system. This includes only access/refresh tokens, not email and password.
+Your credentials (access tokens, not passwords) are saved locally.
+Run `trakt_to_serializd clean` to remove them.
 
-To clean saved credentials, run `trakt_to_serializd clean`.
+## Installation
 
-# Installation
-```
+```bash
 pip install git+https://github.com/Velocidensity/trakt-to-serializd
 ```
-Optionally with a virtual environment of your choice.
 
-# Development
-Development environment is managed via poetry.
+## Development
 
-```
+```bash
 poetry install --with=dev
-```
-
-To install pre-commit hooks, run:
-```
 pre-commit install
 ```
 
-# AI Attribution
+## AI Attribution
 
-The `--with-dates` feature (diary migration with watch dates) was developed with AI assistance.
-
-- **AI Tool**: Claude Opus 4.5 (Anthropic)
-- **Human Oversight**: All code was reviewed and tested by a human developer
-- **Commits**: AI-assisted commits include the `Co-authored-by: Claude <noreply@anthropic.com>` trailer
-
-This disclosure is provided in accordance with best practices for AI transparency in open source development.
+This tool was developed with AI assistance (Claude Opus 4.5, Anthropic).
+AI-assisted commits include the `Co-authored-by: Claude <noreply@anthropic.com>` trailer.
